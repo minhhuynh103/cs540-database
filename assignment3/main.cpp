@@ -12,7 +12,7 @@ Skeleton code for External storage management
 #include <sstream>
 #include <stdexcept>
 #include <cmath>
-#include "classes_new.h"
+#include "classes.h"
 using namespace std;
 
 
@@ -26,6 +26,10 @@ int main(int argc, char* const argv[]) {
     manager.createFromFile("Employee.csv");
 
     // TODO: You'll receive employee IDs as arguments, process them to retrieve the record, or display a message if not found. 
+    for (int i = 1; i < argc; i++) {
+        long long id = stoll(argv[i]);
+        manager.findAndPrintEmployee((int64_t)id);
+    }
 
     return 0;
 }
