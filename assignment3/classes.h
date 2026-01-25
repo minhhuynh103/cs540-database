@@ -9,20 +9,22 @@
 #include <sstream>
 #include <bitset>
 #include <fstream>
+#include <cstdint>
+#include <cstring>
 using namespace std; // Include the standard namespace
 
 class Record
 {
 public:
-    int id, manager_id;    // Employee ID and their manager's ID
+    int64_t id, manager_id;    // Employee ID and their manager's ID
     std::string bio, name; // Fixed length string to store employee name and biography
 
     Record(vector<std::string> &fields)
     {
-        id = stoi(fields[0]);
+        id = stoll(fields[0]);
         name = fields[1];
         bio = fields[2];
-        manager_id = stoi(fields[3]);
+        manager_id = stoll(fields[3]);
     }
 
     // You may use this for debugging / showing the record to standard output.
@@ -35,51 +37,56 @@ public:
     }
 
     // Function to get the size of the record
-    int get_size()
+    int get_size() const
     {
         // sizeof(int) is for name/bio size() in serialize function
-        return sizeof(id) + sizeof(manager_id) + sizeof(int) + name.size() + sizeof(int) + bio.size();
+        return (int)(sizeof(int64_t) + sizeof(int64_t) + sizeof(int32_t) + name.size() + sizeof(int32_t) + bio.size());
     }
 
     // Take a look at Figure 9.9 and read the Section 9.7.2 [Record Organization for Variable Length Records]
     // TODO: Consider using a delimiter in the serialize function to separate these items for easier parsing.
-    // tabi here: i dont think we need a delimiter if we have a slot directory approach so i wouldn't worry about this?
+    // tabi here: i dont think we need a delimiter if we have a slot directory approach so i wouldn't worry about this? 
+    //> I dont think delimiters are needed bc directory provides exact offsets/lengths
     string serialize() const
     {
-        ostringstream oss;
+        ostringstream oss(std::ios::binary);
+
         oss.write(reinterpret_cast<const char *>(&id), sizeof(id));                 // Writes the binary representation of the ID.
         oss.write(reinterpret_cast<const char *>(&manager_id), sizeof(manager_id)); // Writes the binary representation of the Manager id
-        int name_len = name.size();
-        int bio_len = bio.size();
-        oss.write(reinterpret_cast<const char *>(&name_len), sizeof(name_len)); // // Writes the size of the Name in binary format.
-        oss.write(name.c_str(), name.size());                                   // writes the name in binary form
-        oss.write(reinterpret_cast<const char *>(&bio_len), sizeof(bio_len));   // // Writes the size of the Bio in binary format.
-        oss.write(bio.c_str(), bio.size());                                     // writes bio in binary form
+        int32_t name_len = name.size();
+        int32_t bio_len = bio.size();
+        oss.write(reinterpret_cast<const char *>(&name_len), sizeof(name_len));     // Writes the size of the Name in binary format.
+        oss.write(name.data(), name_len);                                           // writes the name in binary form
+        oss.write(reinterpret_cast<const char *>(&bio_len), sizeof(bio_len));       // Writes the size of the Bio in binary format.
+        oss.write(bio.data(), bio_len);                                             // writes bio in binary form
+
+        return oss.str(); // Returns the serialized string representation of the record.
     }
 };
 
 class page
 { // Take a look at Figure 9.7 and read Section 9.6.2 [Page organization for variable length records]
 public:
-    vector<Record> records;                // Data Area: Stores records.
-    vector<pair<int, int>> slot_directory; // This slot directory contains the starting position (offset), and size of the record.
+    vector<Record> records;                         // Data Area: Stores records.
+    vector<pair<int32_t, int32_t>> slot_directory;  // This slot directory contains the starting position (offset), and size of the record.
 
-    int cur_size = 0;              // holds the current size of the page
-    int slot_directory_offset = 0; // offset where the slot directory starts in the page
+    int32_t cur_size = 0;              // holds the current size of the page
+    int32_t slot_directory_offset = 0; // offset where the slot directory starts in the page
 
     // Function to insert a record into the page
     bool insert_record_into_page(Record r)
     {
-        int record_size = r.get_size();
-        int slot_size = sizeof(int) * 2;
-        if (cur_size + record_size + slot_size > 4096)
-        {                 // Check if page size limit exceeded, considering slot directory size
-            return false; // Cannot insert the record into this page
-        }
-        else
-        {
-            records.push_back(r);     // Record stored in current page
-            cur_size += r.get_size(); // Updating page size
+        int32_t record_size = (int32_t)r.get_size();
+        const int32_t slot_entry_size = 8; // offset(4) + length(4)
+        const int32_t metadata_size   = 8; // free_space_ptr(4) + num_slots(4)
+
+        int32_t num_slots_after = (int32_t)slot_directory.size() + 1;
+
+        // Total space needed after insertion:
+        int32_t needed = cur_size + record_size + (num_slots_after * slot_entry_size) + metadata_size;
+
+        if (needed > 4096)
+        return false; // Not enough space in this page
 
             // TO_DO: update slot directory information
             // 1. Calculate the offset for this record (where it starts in the page)
@@ -89,17 +96,22 @@ public:
             //    Example: slot_directory.push_back(make_pair(offset, record_size));
             // 3. The slot index corresponds to the position in the records vector
             //    So slot 0 points to records[0], slot 1 to records[1], etc.
-            int offset = 0;
-            for (const auto &rec : records)
-            {
-                offset += r.get_size();
-            }
 
-            slot_directory.push_back(make_pair(offset, record_size));
+            // int offset = 0;
+            // for (const auto &rec : records)
+            // {
+            //     offset += r.get_size();
+            // }
 
-            return true;
+        int32_t offset = cur_size;  // Since data grows forward, it starts at the current end of used data bytes.
+        records.push_back(r);       // Add the record to the records vector
+        // Add the new slot entry to stores where to find the record and how many bytes to read
+        slot_directory.push_back(make_pair(offset, record_size)); 
+        cur_size += record_size;    // Update the current size of the page        
+
+        return true;
         }
-    }
+    
 
     // heres the setup im going for
     /*
@@ -122,23 +134,31 @@ public:
     void write_into_data_file(ostream &out) const
     {
 
-        char page_data[4096] = {0}; // Write the page contents (records and slot directory) into this char array so that the page can be written to the data file in one go.
+        char page_data[4096]; // Write the page contents (records and slot directory) into this char array so that the page can be written to the data file in one go.
 
-        int offset = 0; // Used as an iterator to indicate where the next item should be stored. Section 9.6.2 contains information that will help you with the implementation.
+        memset(page_data, 0, sizeof(page_data)); // Used as an iterator to indicate where the next item should be stored. Section 9.6.2 contains information that will help you with the implementation.
 
-        for (const auto &record : records)
-        { // Writing the records into the page_data
-            string serialized = record.serialize();
+        // for (const auto &record : records)
+        // { // Writing the records into the page_data
+        //     string serialized = record.serialize();
 
-            memcpy(page_data + offset, serialized.c_str(), serialized.size());
+        //     memcpy(page_data + offset, serialized.c_str(), serialized.size());
 
-            offset += serialized.size();
+        //     offset += serialized.size();
+        // }
+
+        for (size_t i = 0; i < records.size(); i++)
+        {
+            string serialized = records[i].serialize();
+            int32_t off = slot_directory[i].first; // authoritative offset
+            memcpy(page_data + off, serialized.data(), serialized.size());
         }
 
         // TO_DO: Put a delimiter here to indicate slot directory starts from here
+
         // Start slot directory at offset 4096 - (slot_directory.size() * 8) and write backwards from the end
-        int num_slots = slot_directory.size();
-        int free_space_ptr = cur_size;
+        int32_t num_slots = (int32_t)slot_directory.size();
+        int32_t free_space_ptr = cur_size;
 
         memcpy(page_data + 4096 - 4, &free_space_ptr, sizeof(free_space_ptr)); // Pointer to start of free space
         memcpy(page_data + 4096 - 8, &num_slots, sizeof(num_slots));           // Number of slots
@@ -277,16 +297,21 @@ public:
     // Reads data from a CSV file and writes it to EmployeeRelation.dat
     void createFromFile(const string &csvFilename)
     {
+        buffer.clear();
         buffer.resize(3); // You can have maximum of 3 Pages.
 
         ifstream csvFile(csvFilename); // Open the Employee.csv file for reading
+        if (!csvFile.is_open()) {
+            cerr << "Failed to open CSV: " << csvFilename << endl;
+            exit(EXIT_FAILURE);
+        }
 
-        string line, name, bio;
-        int id, manager_id;
-        int page_number = 0; // Current page we are working on [at most 3 pages]
+        string line;
+        int page_number = 0;
 
         while (getline(csvFile, line))
         { // Read each line from the CSV file, parse it, and create Employee objects
+            if (line.empty()) continue; // Skip empty lines
             stringstream ss(line);
             string item;
             vector<string> fields;
@@ -295,7 +320,9 @@ public:
             {
                 fields.push_back(item);
             }
-            Record r = Record(fields); // create a record object
+
+            if (fields.size() != 4) continue;
+            Record r(fields);
 
             if (!buffer[page_number].insert_record_into_page(r))
             { // inserting that record object to the current page
@@ -303,32 +330,61 @@ public:
                 // Current page is full, move to the next page
                 page_number++;
 
-                if (page_number >= buffer.size())
+                if (page_number >= (int)buffer.size())
                 { // Checking if page limit has been reached.
 
                     for (page &p : buffer)
                     { // using write_into_data_file() to write the pages into the data file
-                        p.write_into_data_file(data_file);
+                        if (!p.records.empty())
+                            p.write_into_data_file(data_file);
+                        p = page(); // reset so we don't rewrite old records
                     }
                     page_number = 0; // Starting again from page 0
                 }
-                buffer[page_number].insert_record_into_page(r); // Reattempting the insertion of record 'r' into the newly created page
+                
+                if (!buffer[page_number].insert_record_into_page(r)) // Reattempting the insertion of record 'r' into the newly created page
+                {
+                    cerr << "Record too large for page." << endl;
+                    exit(EXIT_FAILURE);
+                }
             }
         }
+
+         // Flush remaining pages at end
+        for (page &p : buffer)
+        {
+            if (!p.records.empty())
+                p.write_into_data_file(data_file);
+        }
+
+        data_file.flush();
         csvFile.close(); // Close the CSV file
     }
 
     // Searches for an Employee ID in EmployeeRelation.dat
-    void findAndPrintEmployee(int searchId)
+    void findAndPrintEmployee(int64_t searchId)
     {
-
+        data_file.clear(); // Clear any EOF flags
         data_file.seekg(0, ios::beg); // Rewind the data_file to the beginning for reading
 
         // TO_DO: Read pages from your data file (using read_from_data_file) and search for the employee ID in those pages. Be mindful of the page limit in main memory.
-        int page_number = 0;
-        while (buffer[page_number].read_from_data_file(data_file))
+        page p;
+        bool found = false;
+
+        while (p.read_from_data_file(data_file))
         {
+            for (const auto &r : p.records)
+            {
+                if (r.id == searchId)
+                {
+                    r.print();
+                    found = true;
+                }
+            }
         }
+        
         // TO_DO: Print "Record not found" if no records match.
+        if (!found)
+            cout << "Record not found\n";
     }
 };
