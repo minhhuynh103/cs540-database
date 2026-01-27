@@ -26,7 +26,7 @@ public:
     }
 
     // You may use this for debugging / showing the record to standard output.
-    void print()
+    void print() const
     {
         cout << "\tID: " << id << "\n";
         cout << "\tNAME: " << name << "\n";
@@ -72,30 +72,20 @@ public:
     {
         int record_size = r.get_size();
         int slot_size = sizeof(int) * 2;
-        if (cur_size + record_size + slot_size > 4096)
-        {                 // Check if page size limit exceeded, considering slot directory size
-            return false; // Cannot insert the record into this page
+        int available_space = 4096 - 8 - (slot_directory.size() + 1) * slot_size; // Save metadata space
+
+        if (cur_size + record_size > available_space)
+        { // if page size limit exceeded, fail
+            return false;
         }
         else
         {
-            records.push_back(r);     // Record stored in current page
-            cur_size += r.get_size(); // Updating page size
 
-            // TO_DO: update slot directory information
-            // 1. Calculate the offset for this record (where it starts in the page)
-            //    - This should be the sum of all previous record sizes
-            //    - You can track this with a running offset variable
-            // 2. Add a pair to slot_directory: (offset, record_size)
-            //    Example: slot_directory.push_back(make_pair(offset, record_size));
-            // 3. The slot index corresponds to the position in the records vector
-            //    So slot 0 points to records[0], slot 1 to records[1], etc.
-            int offset = 0;
-            for (const auto &rec : records)
-            {
-                offset += r.get_size();
-            }
-
+            // update slot directory information
+            int offset = cur_size;
+            records.push_back(r); // Record stored in current page
             slot_directory.push_back(make_pair(offset, record_size));
+            cur_size += r.get_size(); // Update page size
 
             return true;
         }
@@ -114,8 +104,8 @@ public:
     [Slot 2: offset, length]
     [Slot 1: offset, length]
     [Slot 0: offset, length]
-    [num slots: 4 bytes]
-    [pointer to start of free space: 4 bytes]
+    [num slots: 4 bytes] 4088-4091
+    [pointer to start of free space: 4 bytes] 4092-4095
  */
 
     // Function to write the page to a binary file, i.e., EmployeeRelation.dat file
@@ -140,8 +130,8 @@ public:
         int num_slots = slot_directory.size();
         int free_space_ptr = cur_size;
 
-        memcpy(page_data + 4096 - 4, &free_space_ptr, sizeof(free_space_ptr)); // Pointer to start of free space
-        memcpy(page_data + 4096 - 8, &num_slots, sizeof(num_slots));           // Number of slots
+        memcpy(page_data + 4092, &free_space_ptr, sizeof(free_space_ptr)); // Pointer to start of free space
+        memcpy(page_data + 4088, &num_slots, sizeof(num_slots));           // Number of slots
 
         // Write slots backward from 4088
         int slot_offset = 4088;
@@ -164,6 +154,13 @@ public:
         in.read(page_data, 4096);   // Read a page of 4 KB from the data file
 
         streamsize bytes_read = in.gcount(); // used to check if 4KB was actually read from the data file
+                if (bytes_read > 0)
+        {
+            cerr << "Incomplete read: Expected " << 4096 << " bytes, but only read " << bytes_read << " bytes." << endl;
+        }
+        return false;
+
+
         if (bytes_read == 4096)
         {
 
@@ -172,8 +169,8 @@ public:
 
             // Read metadata from the end
             int num_slots, free_space_ptr;
-            memcpy(&free_space_ptr, page_data + 4092, sizeof(free_space_ptr));
             memcpy(&num_slots, page_data + 4088, sizeof(num_slots));
+            memcpy(&free_space_ptr, page_data + 4092, sizeof(free_space_ptr));
 
             cur_size = free_space_ptr;
 
@@ -197,8 +194,6 @@ public:
             for (const auto &slot : slot_directory)
             {
                 int rec_offset = slot.first;
-                int length = slot.second;
-
                 // Deserialize record from page_data starting at rec_offset
                 int pos = rec_offset;
 
@@ -237,12 +232,7 @@ public:
             return true;
         }
 
-        if (bytes_read > 0)
-        {
-            cerr << "Incomplete read: Expected " << 4096 << " bytes, but only read " << bytes_read << " bytes." << endl;
-        }
 
-        return false;
     }
 };
 
@@ -310,6 +300,15 @@ public:
                     { // using write_into_data_file() to write the pages into the data file
                         p.write_into_data_file(data_file);
                     }
+
+                    // Reset for next set of pages
+                    for (page &p : buffer)
+                    {
+                        p.records.clear();
+                        p.slot_directory.clear();
+                        p.cur_size = 0;
+                    }
+
                     page_number = 0; // Starting again from page 0
                 }
                 buffer[page_number].insert_record_into_page(r); // Reattempting the insertion of record 'r' into the newly created page
@@ -321,14 +320,47 @@ public:
     // Searches for an Employee ID in EmployeeRelation.dat
     void findAndPrintEmployee(int searchId)
     {
-
+        data_file.clear();
         data_file.seekg(0, ios::beg); // Rewind the data_file to the beginning for reading
 
+        // clear buffer pages
+        for (page &p : buffer)
+        {
+            p.records.clear();
+            p.slot_directory.clear();
+            p.cur_size = 0;
+        }
         // TO_DO: Read pages from your data file (using read_from_data_file) and search for the employee ID in those pages. Be mindful of the page limit in main memory.
         int page_number = 0;
+        bool found = false;
+
         while (buffer[page_number].read_from_data_file(data_file))
         {
+            for (const Record &r : buffer[page_number].records)
+            {
+                if (r.id == searchId)
+                {
+                    r.print();
+                    return;
+                }
+            }
+            page_number++;
+            if (page_number >= buffer.size())
+            {
+                page_number = 0;
+                // clear buffer pages
+                for (page &p : buffer)
+                {
+                    p.records.clear();
+                    p.slot_directory.clear();
+                    p.cur_size = 0;
+                }
+            }
         }
         // TO_DO: Print "Record not found" if no records match.
+        if (!found)
+        {
+            cout << "Record not found" << endl;
+        }
     }
 };

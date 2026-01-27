@@ -1,5 +1,12 @@
 /*
-Skeleton code for External storage management
+Assignment 2: Storage Manager
+Minh Huynh
+huynhmin
+huynhmin@oregonstate.edu
+
+Tabitha Rowland
+rowlanta
+rowlanta@oregonstate.edu
 */
 
 #include <string>
