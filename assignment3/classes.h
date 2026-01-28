@@ -55,6 +55,7 @@ public:
         oss.write(name.c_str(), name.size());                                   // writes the name in binary form
         oss.write(reinterpret_cast<const char *>(&bio_len), sizeof(bio_len));   // // Writes the size of the Bio in binary format.
         oss.write(bio.c_str(), bio.size());                                     // writes bio in binary form
+        return oss.str();                                                       // need?
     }
 };
 
@@ -154,12 +155,11 @@ public:
         in.read(page_data, 4096);   // Read a page of 4 KB from the data file
 
         streamsize bytes_read = in.gcount(); // used to check if 4KB was actually read from the data file
-                if (bytes_read > 0)
+        if (bytes_read > 0)
         {
             cerr << "Incomplete read: Expected " << 4096 << " bytes, but only read " << bytes_read << " bytes." << endl;
         }
         return false;
-
 
         if (bytes_read == 4096)
         {
@@ -231,8 +231,6 @@ public:
 
             return true;
         }
-
-
     }
 };
 
