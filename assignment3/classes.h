@@ -2,7 +2,7 @@
 /*** You may modify any part of the code, as long as you stick to the assignments requirements we do not have any issue ***/
 
 /*
-Assignment 2: Storage Manager
+Assignment A3: Storage Management
 Minh Huynh
 huynhmin
 huynhmin@oregonstate.edu
@@ -385,4 +385,5 @@ public:
         std::cout << "Record not found\n";
     }
 };
+
 
