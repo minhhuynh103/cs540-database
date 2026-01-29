@@ -1,5 +1,5 @@
 /*
-Assignment 2: Storage Manager
+Assignment A3: Storage Management
 Minh Huynh
 huynhmin
 huynhmin@oregonstate.edu
@@ -40,3 +40,4 @@ int main(int argc, char* const argv[]) {
 
     return 0;
 }
+
