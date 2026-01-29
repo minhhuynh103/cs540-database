@@ -1,6 +1,17 @@
 /*** This is just a Skeleton/Starter Code for the External Storage Assignment. This is by no means absolute, in terms of assignment approach/ used functions, etc. ***/
 /*** You may modify any part of the code, as long as you stick to the assignments requirements we do not have any issue ***/
 
+/*
+Assignment 2: Storage Manager
+Minh Huynh
+huynhmin
+huynhmin@oregonstate.edu
+
+Tabitha Rowland
+rowlanta
+rowlanta@oregonstate.edu
+*/
+
 // Include necessary standard library headers
 #include <string>
 #include <vector>
@@ -374,3 +385,4 @@ public:
         std::cout << "Record not found\n";
     }
 };
+
