@@ -15,6 +15,10 @@
 #include <cmath>
 using namespace std; // Include the standard namespace
 
+static const int32_t PAGE_SIZE = 4096;
+static const int32_t MAIN_INDEX_PAGES_RESERVED = 5000; // pages 0..4999 reserved for header + primary buckets
+static const char*   INDEX_FILENAME = "EmployeeIndex.dat"; // output file must be EmployeeIndex.dat
+
 class Record
 {
 public:
@@ -70,6 +74,58 @@ public:
 
         return oss.str(); // Returns the serialized string representation of the record.
     }
+
+    // deserialize from raw byte, avoids scanning the page and needed for correct slot directory usage
+    static bool deserialize_from_bytes(const char* page_data, int32_t offset, int32_t length, Record& out)
+    {
+        // Reconstruct record from bytes inside a page using (offset,length) from slot directory
+        if (offset < 0 || length <= 0) return false;
+
+        int32_t pos = offset;           // read pointer in record byte range
+        int32_t end = offset + length;  // first byte after record
+
+        int64_t rid = 0;    // temp record id
+        int64_t rmid = 0;   // temp record manager id
+
+        int32_t nl = 0;
+        int32_t bl = 0;
+
+        if (pos + (int32_t)sizeof(int64_t)*2 + (int32_t)sizeof(int32_t)*2 > end) return false; // minimum size check for id, manager_id, name_len, bio_len
+        
+        // read id
+        memcpy(&rid, page_data + pos, sizeof(int64_t));
+        pos += (int32_t)sizeof(int64_t);
+
+        // read manager_id
+        memcpy(&rmid, page_data + pos, sizeof(int64_t));
+        pos += (int32_t)sizeof(int64_t);
+
+        // read name length 
+        memcpy(&nl, page_data + pos, sizeof(int32_t));
+        pos += (int32_t)sizeof(int32_t);
+        if (nl < 0 || pos + nl > end) return false;
+
+        // read name bytes
+        std::string name(page_data + pos, page_data + pos + nl);
+        pos += nl;
+
+        // read bio length
+        memcpy(&bl, page_data + pos, sizeof(int32_t));
+        pos += (int32_t)sizeof(int32_t);
+        if (bl < 0 || pos + bl > end) return false;
+
+        // read bio bytes
+        std::string bio(page_data + pos, page_data + pos + bl);
+        pos += bl;
+
+        // fill output record
+        out.id = rid;
+        out.manager_id = rmid;
+        out.name = name;
+        out.bio = bio;
+
+    return true;
+    }
 };
 
 class page
@@ -80,6 +136,7 @@ public:
 
     int32_t cur_size = 0;              // holds the current size of the page
     int32_t slot_directory_offset = 0; // offset where the slot directory starts in the page
+    int32_t overflowPointerIndex = -1;  // points to overflow page index 
 
     // Function to insert a record into the page
     bool insert_record_into_page(Record r)
