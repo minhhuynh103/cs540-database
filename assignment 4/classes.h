@@ -136,17 +136,16 @@ public:
 
     int32_t cur_size = 0;              // holds the current size of the page
     int32_t slot_directory_offset = 0; // offset where the slot directory starts in the page
-    int32_t overflowPointerIndex = -1;  // points to overflow page index 
-
+    int32_t overflow_page_idx = -1;    // points to overflow page index
     // Function to insert a record into the page
-    bool insert_record_into_page(Record r)
+    bool insert_record_into_page(const Record &r)
     {
         int32_t record_size = (int32_t)r.get_size();
         const int32_t slot_entry_size = (int32_t)(sizeof(int32_t) * 2);   // offset + length
-        const int32_t metadata_size   = (int32_t)(sizeof(int32_t) * 2);   // num_slots + free_space_ptr
+        const int32_t metadata_size   = (int32_t)(sizeof(int32_t) * 2);   // num_slots + overflow_page_idx
 
         // bytes left for record area after accounting for slot dir 
-        int32_t available_space = 4096 - metadata_size - (int32_t)( (slot_directory.size() + 1) * slot_entry_size);
+        int32_t available_space = PAGE_SIZE - metadata_size - (int32_t)((slot_directory.size() + 1) * slot_entry_size);
 
         if (cur_size + record_size > available_space)
         // if page size limit exceeded, fail
@@ -175,14 +174,14 @@ public:
     [Slot 1: offset, length]
     [Slot 0: offset, length]
     [num slots: 4 bytes]
-    [pointer to start of free space: 4 bytes]
+    [overflow_page_idx: 4 bytes]
  */
 
     // Function to write the page to a binary file, i.e., EmployeeRelation.dat file
     void write_into_data_file(ostream &out) const
     {
 
-        char page_data[4096]; // Write the page contents into this char array so that the page can be written to the data file in one go.
+        char page_data[PAGE_SIZE]; // Write the page contents into this char array so that the page can be written to the data file in one go.
 
         std::memset(page_data, 0, sizeof(page_data));
 
@@ -201,115 +200,105 @@ public:
 
         // Start slot directory at offset 4096 - (slot_directory.size() * 8) and write backwards from the end
         int32_t num_slots = (int32_t)slot_directory.size();
-        int32_t free_space_ptr = cur_size;
+        int32_t pos = PAGE_SIZE;
 
-        // End of page data: num_slots at 4088..4091, free_space_ptr @ 4092..4095
-        std::memcpy(page_data + 4088, &num_slots, sizeof(num_slots));
-        std::memcpy(page_data + 4092, &free_space_ptr, sizeof(free_space_ptr));
+        // write overflow_page_idx into last 4 bytes
+        pos -= (int32_t)sizeof(int32_t);
+        std::memcpy(page_data + pos, &overflow_page_idx, sizeof(int32_t));
 
-        // Write slots backward from 4088
-        int slot_offset = 4088;
-        for (int i = (int)slot_directory.size() - 1; i >= 0; --i)
+        // write num_slots before overflow_page_idx
+        pos -= (int32_t)sizeof(int32_t);
+        std::memcpy(page_data + pos, &num_slots, sizeof(int32_t));
+
+        // Write slot directory right before num_slots, in reverse order
+        for (int i = num_slots - 1; i >= 0; --i)
         {
-            slot_offset -= (int)sizeof(int32_t);
-            memcpy(page_data + slot_offset, &slot_directory[i].second, sizeof(int32_t));
+            // length
+            pos -= (int32_t)sizeof(int32_t);
+            std::memcpy(page_data + pos, &slot_directory[i].second, sizeof(int32_t));
 
-            slot_offset -= (int)sizeof(int32_t);
-            memcpy(page_data + slot_offset, &slot_directory[i].first, sizeof(int32_t));
+            // offset
+            pos -= (int32_t)sizeof(int32_t);
+            std::memcpy(page_data + pos, &slot_directory[i].first, sizeof(int32_t));
         }
 
-        out.write(page_data, sizeof(page_data)); // Write the page_data to the EmployeeRelation.dat file
+        // write page to file
+        out.write(page_data, sizeof(page_data));
     }
 
     // Read a page from a binary input stream, i.e., EmployeeRelation.dat file to populate a page object
     bool read_from_data_file(istream &in)
     {
-        char page_data[4096];
-        in.read(page_data, 4096);   // Read a page of 4 KB from the data file
+        char page_data[PAGE_SIZE];
+        in.read(page_data, PAGE_SIZE);   // Read a page of 4 KB from the data file
         std::streamsize bytes_read = in.gcount();
 
         if (bytes_read == 0)
         return false; // clean EOF
 
-        if (bytes_read != 4096)
+        if (bytes_read != PAGE_SIZE)
         return false; // reject partial page reads
 
         // Reset in-memory page state before populating
         records.clear();
         slot_directory.clear();
         cur_size = 0;
+        overflow_page_idx = -1;
 
-        // Read metadata from the end
+        // read metadata at end of page 
+        int32_t pos = PAGE_SIZE;
+
+        // read overflow_page_idx (last 4 bytes)
+        pos -= (int32_t)sizeof(int32_t);
+        std::memcpy(&overflow_page_idx, page_data + pos, sizeof(int32_t));
+
+        // read num_slots (4 bytes before overflow_page_idx)
+        pos -= (int32_t)sizeof(int32_t);
         int32_t num_slots = 0;
-        int32_t free_space_ptr = 0;
-        std::memcpy(&num_slots, page_data + 4088, sizeof(num_slots));
-        std::memcpy(&free_space_ptr, page_data + 4092, sizeof(free_space_ptr));
-        cur_size = free_space_ptr;
+        std::memcpy(&num_slots, page_data + pos, sizeof(int32_t));
 
-        // Validate metadata to prevent corrupt pages 
-        if (num_slots < 0 || num_slots > 4096 / 8) return false;       // each slot is 8 bytes (offset+len)
-        if (free_space_ptr < 0 || free_space_ptr > 4088) return false; // records must end before slot/metadata 
+        // validate num_slots (each slot entry = 8 bytes)
+        if (num_slots < 0 || num_slots > (PAGE_SIZE / 8)) return false;
 
-        const int32_t data_end = 4088 - num_slots * 8;
-        if (data_end < 0) return false;              // invalid slot directory
-        if (free_space_ptr > data_end) return false; // ensure free space pointer is within data area
+        // Calculate where slot directory starts based on num_slots
+        int32_t slot_bytes = num_slots * (int32_t)sizeof(int32_t) * 2; // offset + length
+        int32_t data_end = pos - slot_bytes;            // first byte of slot directory
+        if (data_end < 0) return false;                 // invalid slot size
 
-        // Read slot directory (working backward from 4088)
-        int slot_offset = 4088;
+        // read slot directory entries
+        int32_t slot_pos = pos;
         for (int i = num_slots - 1; i >= 0; --i)
         {
             int32_t length = 0;
             int32_t offset = 0;
 
-            slot_offset -= (int)sizeof(int32_t);
-            std::memcpy(&length, page_data + slot_offset, sizeof(int32_t));
+            // length
+            slot_pos -= (int32_t)sizeof(int32_t);
+            std::memcpy(&length, page_data + slot_pos, sizeof(int32_t));
 
-            slot_offset -= (int)sizeof(int32_t);
-            std::memcpy(&offset, page_data + slot_offset, sizeof(int32_t));
+            // offset
+            slot_pos -= (int32_t)sizeof(int32_t);
+            std::memcpy(&offset, page_data + slot_pos, sizeof(int32_t));
 
-            if (offset < 0 || length < 0) return false;     // invalid slot entry
-            if (offset + length > data_end) return false;   // record must fit in data area
+            if (offset < 0 || length <= 0) 
+            return false;
+            if (offset + length > data_end) 
+            return false;
 
-            // Insert at beginning to maintain order (since we're reading backward)
+             // Insert at beginning to maintain order
             slot_directory.insert(slot_directory.begin(), std::make_pair(offset, length));
+
+            // update cur_size to be the max offset+length of records, free space pointer 
+            cur_size = std::max(cur_size, offset + length);
         }
 
-        // Now deserialize each record using the slot directory
+        // deserialize records using slot directory
         for (const auto &slot : slot_directory)
         {
-            int32_t rec_offset = slot.first;
-            int32_t pos = rec_offset;
-
-            int64_t id = 0;
-            int64_t manager_id = 0;
-            int32_t name_len = 0;
-            int32_t bio_len = 0;
-
-            // Read id 
-            std::memcpy(&id, page_data + pos, sizeof(id));
-            pos += (int32_t)sizeof(id);
-
-            // Read manager_id 
-            std::memcpy(&manager_id, page_data + pos, sizeof(manager_id));
-            pos += (int32_t)sizeof(manager_id);
-
-            // Read name_len then name
-            std::memcpy(&name_len, page_data + pos, sizeof(name_len));
-            pos += (int32_t)sizeof(name_len);
-
-            std::string name(page_data + pos, page_data + pos + name_len);
-            pos += name_len;
-
-            // Read bio_len then bio
-            std::memcpy(&bio_len, page_data + pos, sizeof(bio_len));
-            pos += (int32_t)sizeof(bio_len);
-
-            std::string bio(page_data + pos, page_data + pos + bio_len);
-            pos += bio_len;
-
-            // Create a Record object
-            std::vector<std::string> fields = {std::to_string(id), name, bio, std::to_string(manager_id)};
-            records.emplace_back(fields);
+            Record r;
+            if (!Record::deserialize_from_bytes(page_data, slot.first, slot.second, r))
+                return false;
+            records.push_back(r);
         }
 
         return true;
