@@ -306,7 +306,7 @@ public:
 };
 
 // Metadata structure stored in page 0
-struct IndexMeta
+struct IndexMetaData
 {
     int32_t level; // current hash level i
     int32_t n;     // number of active primary buckets
@@ -320,7 +320,7 @@ static const int32_t INITIAL_N = 4;     // start with 4 buckets?
 static const double LOAD_FACTOR = 0.70; // for 70 percent full
 
 // metadata goes in page 0
-static void write_meta(fstream &f, const IndexMeta &m)
+static void write_meta(fstream &f, const IndexMetaData &m)
 {
     char buf[PAGE_SIZE];
     std::memset(buf, 0, PAGE_SIZE);
@@ -336,7 +336,6 @@ static void write_meta(fstream &f, const IndexMeta &m)
 
     f.seekp((int64_t)META_PAGE * PAGE_SIZE, std::ios::beg);
     f.write(buf, PAGE_SIZE);
-    f.flush();
 }
 
 // Write a page at a specific page index
@@ -344,7 +343,6 @@ static void write_page_at(fstream &f, int32_t idx, const page &p)
 {
     f.seekp((int64_t)idx * PAGE_SIZE, std::ios::beg);
     p.write_into_data_file(f);
-    f.flush();
 }
 
 // Read a page at a specific page index
@@ -376,7 +374,7 @@ static int32_t page_index_for_bucket(int32_t bucket)
 }
 
 // Allocate a new overflow page
-static int32_t alloc_overflow_page(fstream &f, IndexMeta &meta)
+static int32_t alloc_overflow_page(fstream &f, IndexMetaData &meta)
 {
     if (meta.next_overflow_page < MAIN_INDEX_PAGES_RESERVED)
         meta.next_overflow_page = MAIN_INDEX_PAGES_RESERVED;
@@ -388,7 +386,7 @@ static int32_t alloc_overflow_page(fstream &f, IndexMeta &meta)
 }
 
 // Insert a record into a bucket chain (primary + overflow pages)
-static void insert_into_chain(fstream &f, int32_t page_idx, const Record &r, IndexMeta &meta)
+static void insert_into_chain(fstream &f, int32_t page_idx, const Record &r, IndexMetaData &meta, page &p)
 {
     int32_t cur = page_idx;
 
@@ -398,8 +396,11 @@ static void insert_into_chain(fstream &f, int32_t page_idx, const Record &r, Ind
         if (!read_page_at(f, cur, p))
         {
             // Page doesn't exist yet
-            page empty;
-            write_page_at(f, cur, empty);
+            p.records.clear();
+            p.slot_directory.clear();
+            p.cur_size = 0;
+            p.overflow_page_idx = -1;
+            write_page_at(f, cur, p);
             read_page_at(f, cur, p);
         }
 
@@ -416,66 +417,132 @@ static void insert_into_chain(fstream &f, int32_t page_idx, const Record &r, Ind
         }
         else
         {
-            // Allocate new overflow page
-            int32_t ovp = alloc_overflow_page(f, meta);
-            p.overflow_page_idx = ovp;
+            // make new overflow page
+            int32_t overflowp = alloc_overflow_page(f, meta);
+            // ^ p becomes empty page, gotta read again
+            read_page_at(f, cur, p);
+            p.overflow_page_idx = overflowp;
             write_page_at(f, cur, p);
-            cur = ovp;
+            cur = overflowp;
         }
     }
 }
 
-// Split a bucket: redistribute records between old bucket and new bucket
-static void split_bucket(fstream &f, IndexMeta &meta)
+static void split_bucket(fstream &f, IndexMetaData &meta)
 {
-    // Split pointer s = n - 2^level (the bucket that hasn't been split yet)
+    // s = n - 2^level (the bucket that hasnt been split yet)
     int32_t s = meta.n - (1 << meta.level);
     int32_t old_page_idx = page_index_for_bucket(s);
 
-    // Harvest all records from the old bucket's chain
-    vector<Record> harvested;
-    vector<int32_t> chain_pages;
-    {
-        int32_t cur = old_page_idx;
-        while (cur != -1)
-        {
-            page p;
-            read_page_at(f, cur, p);
-            for (const auto &rec : p.records)
-                harvested.push_back(rec);
-            chain_pages.push_back(cur);
-            cur = p.overflow_page_idx;
-        }
-    }
-
-    // clear pages in the old chain
-    for (int32_t pidx : chain_pages)
-    {
-        page empty;
-        write_page_at(f, pidx, empty);
-    }
-
-    // Increment n (and level if necessary) BEFORE re-inserting
+    // Increment n and level FIRST
     meta.n += 1;
     if (meta.n == (1 << (meta.level + 1)))
         meta.level += 1;
 
-    // Re-insert harvested records using the updated (level, n)
-    for (const auto &rec : harvested)
+    /*
+(0) load the old page, save a local record that needs deleting.
+(1) Get the index position of that record in the page's records vector
+(2) erase the record from the records array at that index position
+(3) erase the slot from the slot_directory at that index position
+(4) write the page
+(5) load the new page
+(6) add the record to the new page, include overflow page if necessary (record is the local one you stored in step 0)
+(7) write the new page
+*/
+
+    int32_t cur = old_page_idx;
+    page p;
+    while (cur != -1)
     {
-        int32_t b = bucket_for(rec.id, meta.level, meta.n);
-        int32_t pidx = page_index_for_bucket(b);
-        insert_into_chain(f, pidx, rec, meta);
+        // Read old page
+        read_page_at(f, cur, p);
+        int32_t next_overflow = p.overflow_page_idx;
+
+        // Collect all records from this page FIRST
+        vector<Record> records_to_move;
+        for (const auto &rec : p.records)
+        {
+            records_to_move.push_back(rec);
+        }
+
+        // Clear the old page completely
+        p.records.clear();
+        p.slot_directory.clear();
+        p.cur_size = 0;
+        p.overflow_page_idx = -1;
+        write_page_at(f, cur, p); // Write once per page, not once per record!
+
+        // Now redistribute all records
+        for (const auto &local_record : records_to_move)
+        {
+            int32_t new_bucket = bucket_for(local_record.id, meta.level, meta.n);
+            int32_t new_page_idx = page_index_for_bucket(new_bucket);
+            insert_into_chain(f, new_page_idx, local_record, meta, p);
+        }
+
+        // Move to next overflow page in the old chain
+        cur = next_overflow;
     }
-    // total_records is unchanged by a split
 }
+
+// int32_t cur = old_page_idx;
+// page p;
+// while (cur != -1)
+// {
+//     // Read old page
+//     read_page_at(f, cur, p);
+//     int32_t next_overflow = p.overflow_page_idx;
+
+//     // Process all records on this page
+//     while (!p.records.empty())
+//     {
+//         // (0) Save the record locally
+//         Record local_record = p.records.back();
+
+//         // (1)(2)(3) Remove from old page
+//         int32_t idx = (int32_t)p.records.size() - 1;
+//         p.records.erase(p.records.begin() + idx);
+//         p.slot_directory.erase(p.slot_directory.begin() + idx);
+
+//         // update cur_size to be the max offset+length of records, free space pointer
+//         p.cur_size = 0;
+//         for (const auto &slot : p.slot_directory)
+//         {
+//             p.cur_size = std::max(p.cur_size, slot.first + slot.second);
+//         }
+
+//         // (4)
+//         write_page_at(f, cur, p);
+
+//         // new bucket for this record?
+//         int32_t new_bucket = bucket_for(local_record.id, meta.level, meta.n);
+//         int32_t new_page_idx = page_index_for_bucket(new_bucket);
+
+//         // (5)(6)(7) Insert into new location (handles overflow if needed)
+//         insert_into_chain(f, new_page_idx, local_record, meta, p);
+
+//         // Re-read the old page for next iteration
+//         read_page_at(f, cur, p);
+//     }
+
+//     // Clear this page completely (all records redistributed)
+//     p.records.clear();
+//     p.slot_directory.clear();
+//     p.cur_size = 0;
+//     p.overflow_page_idx = -1;
+//     write_page_at(f, cur, p);
+
+//     // Move to next overflow page in the old chain
+//     cur = next_overflow;
+// }
 
 class LinearHashIndex
 {
-    IndexMeta meta;
+    IndexMetaData meta;
     string indexFilename;
     string filename; // Name of the file (EmployeeRelation.dat) where we will store the Pages
     fstream data_file;
+    page current_page;
 
 public:
     // Insert one record into the index
@@ -484,11 +551,11 @@ public:
         // Find destination bucket and insert
         int32_t b = bucket_for(r.id, meta.level, meta.n);
         int32_t pidx = page_index_for_bucket(b);
-        insert_into_chain(data_file, pidx, r, meta);
+        insert_into_chain(data_file, pidx, r, meta, current_page);
         meta.total_records++;
 
         // Check if we need to split
-        double avg_bytes = (double)r.get_size();
+        double avg_bytes = 400.0;
         double usable = (double)(PAGE_SIZE - 8); // 8 bytes for num_slots + overflow_page_idx
         double cap = usable / avg_bytes;
         double threshold = LOAD_FACTOR * cap * (double)meta.n;
@@ -500,8 +567,11 @@ public:
             threshold = LOAD_FACTOR * cap * (double)meta.n;
         }
 
-        // Persist updated metadata
-        write_meta(data_file, meta);
+        // write metadata every 100 records
+        if (meta.total_records % 100 == 0)
+        {
+            write_meta(data_file, meta);
+        }
     }
 
     // Constructor that opens a data file for binary input/output; truncates any existing data file
@@ -520,13 +590,17 @@ public:
         meta.next_overflow_page = MAIN_INDEX_PAGES_RESERVED;
 
         // Pre-allocate all 5000 primary pages so bucket k is always at
-        // a fixed offset — no bucket array needed during search
+        // a fixed offset. no bucket array
         {
             page empty;
             for (int32_t i = 0; i < MAIN_INDEX_PAGES_RESERVED; ++i)
             {
                 data_file.seekp((int64_t)i * PAGE_SIZE, std::ios::beg);
-                empty.write_into_data_file(data_file);
+                current_page.records.clear();
+                current_page.slot_directory.clear();
+                current_page.cur_size = 0;
+                current_page.overflow_page_idx = -1;
+                current_page.write_into_data_file(data_file);
             }
             data_file.flush();
         }
@@ -538,6 +612,8 @@ public:
     {
         if (data_file.is_open())
         {
+            write_meta(data_file, meta); // persist metadata on close
+            data_file.flush();
             data_file.close();
         }
     }
@@ -589,10 +665,10 @@ public:
 
         {
             page p;
-            if (!read_page_at(data_file, cur, p))
+            if (!read_page_at(data_file, cur, current_page))
                 break;
 
-            for (const auto &r : p.records)
+            for (const auto &r : current_page.records)
             {
                 if (r.id == searchId)
                 {
@@ -601,7 +677,7 @@ public:
                     return;
                 }
             }
-            cur = p.overflow_page_idx;
+            cur = current_page.overflow_page_idx;
         }
 
         // TO_DO: Print "Record not found" if no records match.
