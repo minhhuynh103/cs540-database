@@ -458,7 +458,7 @@ static void split_bucket(fstream &f, IndexMetaData &meta)
         read_page_at(f, cur, p);
         int32_t next_overflow = p.overflow_page_idx;
 
-        // Collect all records from this page FIRST
+        // Collect all records from this page 
         vector<Record> records_to_move;
         for (const auto &rec : p.records)
         {
@@ -470,7 +470,7 @@ static void split_bucket(fstream &f, IndexMetaData &meta)
         p.slot_directory.clear();
         p.cur_size = 0;
         p.overflow_page_idx = -1;
-        write_page_at(f, cur, p); // Write once per page, not once per record!
+        write_page_at(f, cur, p); // once per page
 
         // Now redistribute all records
         for (const auto &local_record : records_to_move)
@@ -485,56 +485,6 @@ static void split_bucket(fstream &f, IndexMetaData &meta)
     }
 }
 
-// int32_t cur = old_page_idx;
-// page p;
-// while (cur != -1)
-// {
-//     // Read old page
-//     read_page_at(f, cur, p);
-//     int32_t next_overflow = p.overflow_page_idx;
-
-//     // Process all records on this page
-//     while (!p.records.empty())
-//     {
-//         // (0) Save the record locally
-//         Record local_record = p.records.back();
-
-//         // (1)(2)(3) Remove from old page
-//         int32_t idx = (int32_t)p.records.size() - 1;
-//         p.records.erase(p.records.begin() + idx);
-//         p.slot_directory.erase(p.slot_directory.begin() + idx);
-
-//         // update cur_size to be the max offset+length of records, free space pointer
-//         p.cur_size = 0;
-//         for (const auto &slot : p.slot_directory)
-//         {
-//             p.cur_size = std::max(p.cur_size, slot.first + slot.second);
-//         }
-
-//         // (4)
-//         write_page_at(f, cur, p);
-
-//         // new bucket for this record?
-//         int32_t new_bucket = bucket_for(local_record.id, meta.level, meta.n);
-//         int32_t new_page_idx = page_index_for_bucket(new_bucket);
-
-//         // (5)(6)(7) Insert into new location (handles overflow if needed)
-//         insert_into_chain(f, new_page_idx, local_record, meta, p);
-
-//         // Re-read the old page for next iteration
-//         read_page_at(f, cur, p);
-//     }
-
-//     // Clear this page completely (all records redistributed)
-//     p.records.clear();
-//     p.slot_directory.clear();
-//     p.cur_size = 0;
-//     p.overflow_page_idx = -1;
-//     write_page_at(f, cur, p);
-
-//     // Move to next overflow page in the old chain
-//     cur = next_overflow;
-// }
 
 class LinearHashIndex
 {
