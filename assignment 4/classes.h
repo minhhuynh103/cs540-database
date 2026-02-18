@@ -510,19 +510,19 @@ public:
         insert_into_chain(data_file, pidx, r, meta, current_page);
         meta.total_records++;
 
-        // debug to see why its so slow
-        static int count = 0;
-        count++;
-        // get the time stamp every 1000 records to print progress and debug performance
-        static auto start = std::chrono::high_resolution_clock::now();
+        // // debug to see why its so slow
+        // static int count = 0;
+        // count++;
+        // // get the time stamp every 1000 records to print progress and debug performance
+        // static auto start = std::chrono::high_resolution_clock::now();
 
-        if (count % 1000 == 0)
-        {
-            auto now = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
-            cout << "Inserted " << count << " records, n=" << meta.n << ", time=" << duration.count() << "ms\n"
-                 << flush;
-        }
+        // if (count % 1000 == 0)
+        // {
+        //     auto now = std::chrono::high_resolution_clock::now();
+        //     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
+        //     cout << "Inserted " << count << " records, n=" << meta.n << ", time=" << duration.count() << "ms\n"
+        //          << flush;
+        // }
 
         // Track total bytes for accurate average
         total_bytes_inserted += r.get_size();
