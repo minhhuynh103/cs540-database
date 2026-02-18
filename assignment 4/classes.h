@@ -1,5 +1,13 @@
-/*** This is just a Skeleton/Starter Code for the External Storage Assignment. This is by no means absolute, in terms of assignment approach/ used functions, etc. ***/
-/*** You may modify any part of the code, as long as you stick to the assignments requirements we do not have any issue ***/
+/*
+Assignment A3: Storage Management
+Minh Huynh
+huynhmin
+huynhmin@oregonstate.edu
+
+Tabitha Rowland
+rowlanta
+rowlanta@oregonstate.edu
+*/
 
 // Include necessary standard library headers
 #include <string>
@@ -392,7 +400,6 @@ static void insert_into_chain(fstream &f, int32_t page_idx, const Record &r, Ind
 
     while (true)
     {
-        page p;
         if (!read_page_at(f, cur, p))
         {
             // Page doesn't exist yet
@@ -428,7 +435,7 @@ static void insert_into_chain(fstream &f, int32_t page_idx, const Record &r, Ind
     }
 }
 
-static void split_bucket(fstream &f, IndexMetaData &meta)
+static void split_bucket(fstream &f, IndexMetaData &meta, page &p)
 {
     // s = n - 2^level (the bucket that hasnt been split yet)
     int32_t s = meta.n - (1 << meta.level);
@@ -451,14 +458,13 @@ static void split_bucket(fstream &f, IndexMetaData &meta)
 */
 
     int32_t cur = old_page_idx;
-    page p;
     while (cur != -1)
     {
         // Read old page
         read_page_at(f, cur, p);
         int32_t next_overflow = p.overflow_page_idx;
 
-        // Collect all records from this page 
+        // Collect all records from this page
         vector<Record> records_to_move;
         for (const auto &rec : p.records)
         {
@@ -485,7 +491,6 @@ static void split_bucket(fstream &f, IndexMetaData &meta)
     }
 }
 
-
 class LinearHashIndex
 {
     IndexMetaData meta;
@@ -493,6 +498,7 @@ class LinearHashIndex
     string filename; // Name of the file (EmployeeRelation.dat) where we will store the Pages
     fstream data_file;
     page current_page;
+    int64_t total_bytes_inserted;
 
 public:
     // Insert one record into the index
@@ -504,16 +510,41 @@ public:
         insert_into_chain(data_file, pidx, r, meta, current_page);
         meta.total_records++;
 
+        // debug to see why its so slow
+        static int count = 0;
+        count++;
+        // get the time stamp every 1000 records to print progress and debug performance
+        static auto start = std::chrono::high_resolution_clock::now();
+
+        if (count % 1000 == 0)
+        {
+            auto now = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
+            cout << "Inserted " << count << " records, n=" << meta.n << ", time=" << duration.count() << "ms\n"
+                 << flush;
+        }
+
+        // Track total bytes for accurate average
+        total_bytes_inserted += r.get_size();
         // Check if we need to split
-        double avg_bytes = 400.0;
+        double avg_bytes = (double)total_bytes_inserted / (double)meta.total_records;
         double usable = (double)(PAGE_SIZE - 8); // 8 bytes for num_slots + overflow_page_idx
         double cap = usable / avg_bytes;
         double threshold = LOAD_FACTOR * cap * (double)meta.n;
 
+        int split_loop_count = 0;
         while ((double)meta.total_records > threshold &&
                meta.n < MAIN_INDEX_PAGES_RESERVED - DATA_START)
         {
-            split_bucket(data_file, meta);
+            split_loop_count++;
+            if (split_loop_count > 20)
+            {
+                cerr << "ERROR: Too many splits in one insert! count=" << split_loop_count << "\n";
+                cerr << "total_records=" << meta.total_records << ", threshold=" << threshold << "\n";
+                cerr << "n=" << meta.n << ", avg_bytes=" << avg_bytes << "\n";
+                exit(1);
+            }
+            split_bucket(data_file, meta, current_page);
             threshold = LOAD_FACTOR * cap * (double)meta.n;
         }
 
@@ -525,7 +556,7 @@ public:
     }
 
     // Constructor that opens a data file for binary input/output; truncates any existing data file
-    LinearHashIndex(const string &filename) : filename(filename)
+    LinearHashIndex(const string &filename) : filename(filename), total_bytes_inserted(0)
     {
         data_file.open(filename, ios::binary | ios::out | ios::in | ios::trunc);
         if (!data_file.is_open())
