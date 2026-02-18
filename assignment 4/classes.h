@@ -470,29 +470,21 @@ static void split_bucket(fstream &f, IndexMeta &meta)
     // total_records is unchanged by a split
 }
 
-
-
-
-
-
 class LinearHashIndex
 {
-    fstream file;
     IndexMeta meta;
     string indexFilename;
+    string filename; // Name of the file (EmployeeRelation.dat) where we will store the Pages
+    fstream data_file;
 
 public:
-    string filename;     // Name of the file (EmployeeRelation.dat) where we will store the Pages
-    fstream data_file;   // fstream to handle both input and output binary file operations
-    vector<page> buffer; // You can have maximum of 3 Pages.
-
     // Insert one record into the index
     void insert_into_index(const Record &r)
     {
         // Find destination bucket and insert
         int32_t b = bucket_for(r.id, meta.level, meta.n);
         int32_t pidx = page_index_for_bucket(b);
-        insert_into_chain(file, pidx, r, meta);
+        insert_into_chain(data_file, pidx, r, meta);
         meta.total_records++;
 
         // Check if we need to split
@@ -504,12 +496,12 @@ public:
         while ((double)meta.total_records > threshold &&
                meta.n < MAIN_INDEX_PAGES_RESERVED - DATA_START)
         {
-            split_bucket(file, meta);
+            split_bucket(data_file, meta);
             threshold = LOAD_FACTOR * cap * (double)meta.n;
         }
 
         // Persist updated metadata
-        write_meta(file, meta);
+        write_meta(data_file, meta);
     }
 
     // Constructor that opens a data file for binary input/output; truncates any existing data file
@@ -533,13 +525,13 @@ public:
             page empty;
             for (int32_t i = 0; i < MAIN_INDEX_PAGES_RESERVED; ++i)
             {
-                file.seekp((int64_t)i * PAGE_SIZE, std::ios::beg);
-                empty.write_into_data_file(file);
+                data_file.seekp((int64_t)i * PAGE_SIZE, std::ios::beg);
+                empty.write_into_data_file(data_file);
             }
-            file.flush();
+            data_file.flush();
         }
 
-        write_meta(file, meta);
+        write_meta(data_file, meta);
     }
     // Destructor closes the data file if it is still open
     ~LinearHashIndex()
@@ -581,7 +573,6 @@ public:
             insert_into_index(r);
         }
 
-
         csvFile.close(); // Close the CSV file
         cout << "Index built: " << meta.total_records << " records, "
              << meta.n << " buckets, level " << meta.level << "\n";
@@ -590,15 +581,16 @@ public:
     // Searches for an Employee ID in EmployeeRelation.dat
     void findAndPrintEmployee(int64_t searchId)
     {
-        int32_t b    = bucket_for((int64_t)searchId, meta.level, meta.n);
-        int32_t cur  = page_index_for_bucket(b);
-        bool    found = false;
-        
+        int32_t b = bucket_for((int64_t)searchId, meta.level, meta.n);
+        int32_t cur = page_index_for_bucket(b);
+        bool found = false;
+
         while (cur != -1)
 
         {
             page p;
-            if (!read_page_at(file, cur, p)) break;
+            if (!read_page_at(data_file, cur, p))
+                break;
 
             for (const auto &r : p.records)
             {
@@ -609,8 +601,7 @@ public:
                     return;
                 }
             }
-                        cur = p.overflow_page_idx;
-
+            cur = p.overflow_page_idx;
         }
 
         // TO_DO: Print "Record not found" if no records match.
