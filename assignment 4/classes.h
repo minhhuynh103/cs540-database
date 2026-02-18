@@ -1,5 +1,5 @@
 /*
-Assignment A3: Storage Management
+Assignment A4: Hash Indexing
 Minh Huynh
 huynhmin
 huynhmin@oregonstate.edu
@@ -7,6 +7,9 @@ huynhmin@oregonstate.edu
 Tabitha Rowland
 rowlanta
 rowlanta@oregonstate.edu
+
+NOTE!!!!!
+with 50,000 records it takes 10 min ish to run. with 5,000 it only takes about 5 seconds. please be patient! it does work.
 */
 
 // Include necessary standard library headers
