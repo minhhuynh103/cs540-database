@@ -21,10 +21,10 @@ class Records{
 };
 
 // Grab a single block from the Employee_p1.csv file and put it inside the EmpRecord structure of the Records Class
-Records Grab_Emp_Record(fstream &empin) {
+Records Grab_Emp_Record(istream &empin) {
     string line, word;
     Records emp;
-    if (getline(empin, line, '\n')) {  // grab entire line
+    if (getline(empin, line)) {  // grab entire line
         stringstream s(line); // turn line into a stream
 
         getline(s, word,',');
@@ -33,9 +33,10 @@ Records Grab_Emp_Record(fstream &empin) {
         emp.emp_record.name = word;
         getline(s, word, ',');
         emp.emp_record.bio = word;
-        getline(s, word, ',');
+        getline(s, word);
         emp.emp_record.manager_id = stoi(word);
 
+        emp.no_values = 4;
         return emp;
     } else {
         emp.no_values = -1;
