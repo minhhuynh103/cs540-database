@@ -60,11 +60,12 @@ Records Grab_Dept_Record(fstream &deptin) {
         getline(s, word, ',');
         dept.dept_record.dname = word;
         getline(s, word, ',');
-        dept.dept_record.managerid = stoi(word);
+        dept.dept_record.manager_id = stoi(word);
 
         return dept;
     } else {
         dept.no_values = -1;
         return dept;
     }
+
 }
